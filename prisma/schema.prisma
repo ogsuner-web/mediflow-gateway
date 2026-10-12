@@ -1,0 +1,36 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Cada instalación de MediFlow en una PC. El plan y la prueba se manejan acá (del lado del servidor),
+// para que el límite de IA y de pacientes no se pueda manipular en el cliente.
+model Installation {
+  id              String   @id                 // installationId (uuid generado por el cliente)
+  email           String?
+  plan            String   @default("TRIAL")   // TRIAL, INICIAL, PRO, AVANZADO, EXPIRED
+  trialStart      DateTime @default(now())
+  mpPreapprovalId String?                       // id de la suscripción de Mercado Pago
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  usage           UsageMonth[]
+}
+
+// Uso de IA por mes y por instalación (se reinicia cada mes con un yearMonth nuevo).
+model UsageMonth {
+  id             String   @id @default(uuid())
+  installationId String
+  yearMonth      String                         // "2026-10"
+  aiCount        Int      @default(0)
+  extraAi        Int      @default(0)            // usos extra comprados (packs)
+
+  installation   Installation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@unique([installationId, yearMonth])
+}
