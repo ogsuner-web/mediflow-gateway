@@ -3,6 +3,7 @@ const express = require('express');
 const { PrismaClient } = require('@prisma/client');
 const PLANS = require('./plans');
 const { geminiGenerate } = require('./ai');
+const mp = require('./mp');
 
 const prisma = new PrismaClient();
 const app = express();
@@ -88,9 +89,73 @@ app.post('/api/ai', async (req, res) => {
   res.json({ text, aiLeft: after.aiLeft });
 });
 
-// --- Mercado Pago (se completa con las credenciales del usuario) ---
-// POST /api/mp/webhook  -> recibe el aviso de pago/suscripción y activa el plan.
-// POST /api/subscribe   -> crea el link de suscripción (preapproval).
-// (Pendiente: requiere MP_ACCESS_TOKEN en el .env del gateway.)
+// --- Mercado Pago (suscripciones) ---
+// Config necesaria en el entorno del gateway: MP_ACCESS_TOKEN y USD_ARS (ver src/mp.js).
+
+const PAID_PLANS = ['INICIAL', 'PRO', 'AVANZADO'];
+
+// Crea el link de suscripción para una instalación. Devuelve { initPoint } para abrir el checkout.
+app.post('/api/subscribe', async (req, res) => {
+  const { installationId, plan, email } = req.body || {};
+  if (!validId(installationId)) return res.status(400).json({ error: 'installationId inválido' });
+  if (!PAID_PLANS.includes(plan)) return res.status(400).json({ error: 'Plan inválido' });
+  const cfg = mp.mpConfigured();
+  if (!cfg.token) return res.status(503).json({ error: 'Pagos no configurados (falta MP_ACCESS_TOKEN)' });
+  if (!cfg.rate) return res.status(503).json({ error: 'Falta la cotización USD_ARS en el gateway' });
+  try {
+    // La instalación tiene que existir (se registró al instalar). Si no, la creamos.
+    await prisma.installation.upsert({ where: { id: installationId }, update: email ? { email } : {}, create: { id: installationId, email } });
+    const { id, initPoint, amount } = await mp.createPreapproval({ installationId, planKey: plan, plan: PLANS[plan], email });
+    res.json({ initPoint, preapprovalId: id, amountArs: amount });
+  } catch (e) {
+    console.error('[subscribe]', e.message, e.body || '');
+    res.status(502).json({ error: 'No se pudo crear la suscripción en Mercado Pago' });
+  }
+});
+
+// Página puente: redirige directo al checkout de MP (para linkear desde la app o la web).
+// Uso: /subscribe?installationId=...&plan=PRO&email=...
+app.get('/subscribe', async (req, res) => {
+  const { installationId, plan, email } = req.query;
+  if (!validId(installationId) || !PAID_PLANS.includes(String(plan))) return res.status(400).send('Datos inválidos');
+  const cfg = mp.mpConfigured();
+  if (!cfg.token || !cfg.rate) return res.status(503).send('Pagos no configurados todavía.');
+  try {
+    await prisma.installation.upsert({ where: { id: String(installationId) }, update: email ? { email: String(email) } : {}, create: { id: String(installationId), email: email ? String(email) : undefined } });
+    const { initPoint } = await mp.createPreapproval({ installationId: String(installationId), planKey: String(plan), plan: PLANS[String(plan)], email: email ? String(email) : undefined });
+    res.redirect(302, initPoint);
+  } catch (e) {
+    console.error('[subscribe-redirect]', e.message);
+    res.status(502).send('No se pudo iniciar el pago, reintentá en un momento.');
+  }
+});
+
+// Reconcilia una suscripción contra MP y actualiza el plan de la instalación.
+async function reconcilePreapproval(preapprovalId) {
+  const pre = await mp.getPreapproval(preapprovalId);
+  const ref = String(pre.external_reference || '');
+  const [installationId, planKey] = ref.split('|');
+  if (!validId(installationId) || !PAID_PLANS.includes(planKey)) return;
+  const inst = await prisma.installation.findUnique({ where: { id: installationId } });
+  if (!inst) return;
+  // authorized = suscripción activa; cualquier otro estado la deja sin plan pago.
+  if (pre.status === 'authorized') {
+    await prisma.installation.update({ where: { id: installationId }, data: { plan: planKey, active: true, mpPreapprovalId: preapprovalId } });
+    console.log(`[mp] ${installationId} -> plan ${planKey} (authorized)`);
+  } else if (['cancelled', 'paused'].includes(pre.status)) {
+    await prisma.installation.update({ where: { id: installationId }, data: { plan: 'EXPIRED', active: false } });
+    console.log(`[mp] ${installationId} -> EXPIRED (${pre.status})`);
+  }
+}
+
+// Webhook de MP: avisa cambios de pago/suscripción. Respondemos 200 rápido y verificamos contra MP.
+app.post('/api/mp/webhook', async (req, res) => {
+  res.sendStatus(200); // MP reintenta si no recibe 200 pronto
+  try {
+    const type = req.body?.type || req.query?.type || req.query?.topic || '';
+    const id = req.body?.data?.id || req.query?.id || req.query?.['data.id'];
+    if (String(type).includes('preapproval') && id) await reconcilePreapproval(String(id));
+  } catch (e) { console.error('[mp-webhook]', e.message); }
+});
 
 app.listen(PORT, () => console.log(`[gateway] escuchando en http://localhost:${PORT}`));

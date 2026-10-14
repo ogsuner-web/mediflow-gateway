@@ -21,6 +21,18 @@ Servidor de licencias + cuota de IA (+ pagos de Mercado Pago, en camino) para Me
 - `GET /api/status?installationId=<uuid>`
 - `POST /api/ai` `{ "installationId": "<uuid>", "parts": "texto" }`
 
+## Mercado Pago (suscripciones)
+
+Endpoints: `POST /api/subscribe` (crea el link de pago), `GET /subscribe` (puente que redirige al checkout) y `POST /api/mp/webhook` (MP avisa y se activa el plan).
+
+Para activarlo, en **Variables** de Railway agregá:
+- `MP_ACCESS_TOKEN` = token de tu cuenta de MP (`TEST-...` para pruebas, `APP_USR-...` en producción)
+- `USD_ARS` = cotización del día (los planes están en USD, MP cobra en pesos)
+- `WEB_URL` = `https://mediflow-med.netlify.app` (opcional)
+
+Después, en el panel de Mercado Pago (tu aplicación → Webhooks/Notificaciones), configurá la URL:
+`https://mediflow-gateway-production.up.railway.app/api/mp/webhook` y suscribite al evento de **suscripciones (preapproval)**.
+
 ## Pendiente
-- Integración de Mercado Pago (suscripción + webhook).
-- Conectar MediFlow (la app) para que pida la IA a este gateway.
+- Botón "Suscribirme" en la app MediFlow (que llame a `/api/subscribe` con su installationId).
+- Panel de administración de planes/instalaciones.
