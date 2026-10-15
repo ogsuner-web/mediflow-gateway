@@ -38,6 +38,7 @@ async function statusOf(inst) {
     aiLimit,
     aiUsed: usage?.aiCount || 0,
     aiLeft: Math.max(0, aiLimit - (usage?.aiCount || 0)),
+    latestVersion: process.env.LATEST_VERSION || null, // para avisar en la app si hay update
   };
 }
 
